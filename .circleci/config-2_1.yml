@@ -155,6 +155,14 @@ default_env_vars: &default_env_vars
     # The number of times that the repeated JUnit test should be run.
     REPEATED_ANT_TEST_COUNT: 500
 
+parameters:
+  par_executor_parallelism:
+    type: integer
+    default: 4
+  default_resource_class:
+    type: string
+    default: medium
+
 j8_par_executor: &j8_par_executor
   executor:
     name: java8-executor
@@ -244,6 +252,20 @@ j11_repeated_dtest_executor: &j11_repeated_dtest_executor
   executor:
     name: java11-executor
   parallelism: 4
+
+pre_commit_jobs: &pre_commit_jobs
+  jobs:
+    - start_pre-commit_tests:
+        type: approval
+    - build:
+        requires:
+          - start_pre-commit_tests
+        java_env: << parameters.build_env >>
+    - unit_tests:
+        requires:
+          - build
+        java_env: << parameters.test_env >>
+
 
 j8_separate_jobs: &j8_separate_jobs
   jobs:
@@ -1552,6 +1574,37 @@ j11_pre-commit_jobs: &j11_pre-commit_jobs
 
 workflows:
     version: 2
+    # We hand-define a matrix of build/test JDK versions because CircleCI does not support passing a matrix as a parameter
+    j8_build_j8_test_pre-commit:
+      parameters:
+        build_env:
+          type: executor
+          default: java8-executor
+        test_env:
+          type: executor
+          default: java8-executor
+      <<: *pre_commit_jobs
+
+    j8_build_j11_test_pre-commit:
+      parameters:
+        build_env:
+          type: executor
+          default: java8-executor
+        test_env:
+          type: executor
+          default: java11-executor
+      <<: *pre_commit_jobs
+
+    j11_build_j11_test_pre-commit:
+      parameters:
+        build_env:
+          type: executor
+          default: java11-executor
+        test_env:
+          type: executor
+          default: java11-executor
+      <<: *pre_commit_jobs
+
     java8_separate_tests: *j8_separate_jobs
     java8_pre-commit_tests: *j8_pre-commit_jobs
     java11_separate_tests: *j11_separate_jobs
@@ -1603,6 +1656,37 @@ build_common: &build_common
           - .m2
 
 jobs:
+  # This job only exists as an indirect way to parameterize a matrix
+  target_env_log:
+    parameters:
+      java_env:
+        type: executor
+    executor: << parameters.java_env >>
+    steps:
+      - log_environment
+
+  build:
+    parameters:
+      java_env:
+        type: executor
+    executor: << parameters.java_env >>
+    <<: *build_common
+
+  unit_tests:
+    parameters:
+      java_env:
+        type: executor
+    executor: << parameters.java_env >>
+    parallelism: << pipeline.parameters.par_executor_parallelism >>
+    resource_class: << pipeline.parameters.default_resource_class >>
+    steps:
+      - attach_workspace:
+          at: /home/cassandra
+      - create_junit_containers
+      - log_environment
+      - run_parallel_junit_tests
+
+
   j8_build:
     executor: java8-executor
     <<: *build_common
@@ -3133,17 +3217,17 @@ commands:
             if [ -d ~/dtest_jars ]; then
               cp ~/dtest_jars/dtest* /tmp/cassandra/build/
             fi
-            
+
             # Calculate the number of test iterations to be run by the current parallel runner.
             count=$((<<parameters.count>> / CIRCLE_NODE_TOTAL))
             if (($CIRCLE_NODE_INDEX < (<<parameters.count>> % CIRCLE_NODE_TOTAL))); then
               count=$((count+1))
             fi
-            
+
             # Put manually specified tests and automatically detected tests together, removing duplicates
             tests=$(echo <<parameters.tests>> | sed -e "s/<nil>//" | sed -e "s/ //" | tr "," "\n" | tr " " "\n" | sort -n | uniq -u)
             echo "Tests to be repeated: ${tests}"
-            
+
             # Prepare the JVM dtests vnodes argument, which is optional.
             vnodes=<<parameters.vnodes>>
             vnodes_args=""
@@ -3167,7 +3251,7 @@ commands:
             # Run each test class as many times as requested.
             exit_code="$?"
             for test in $tests; do
-            
+
                 # Split class and method names from the test name
                 if [[ $test =~ "#" ]]; then
                   class=${test%"#"*}
@@ -3176,7 +3260,7 @@ commands:
                   class=$test
                   method=""
                 fi
-            
+
                 # Prepare the -Dtest.name argument.
                 # It can be the fully qualified class name or the short class name, depending on the target.
                 if [[ $target == "test" || \
@@ -3192,14 +3276,14 @@ commands:
                 else
                   name_arg="-Dtest.name=$class"
                 fi
-            
+
                 # Prepare the -Dtest.methods argument, which is optional
                 if [[ $method == "" ]]; then
                   methods_arg=""
                 else
                   methods_arg="-Dtest.methods=$method"
                 fi
-            
+
                 for i in $(seq -w 1 $count); do
                   echo "Running test $test, iteration $i of $count"
 
@@ -3233,7 +3317,7 @@ commands:
                   if [[ -d $source && -n "$(ls $source)" ]]; then
                     mv $source/* $dest/
                   fi
-                  
+
                   # maybe stop iterations on test failure
                   if [[ <<parameters.stop_on_failure>> = true ]] && (( $exit_code > 0 )); then
                     break
@@ -3279,7 +3363,7 @@ commands:
             elif [ "<<parameters.count>>" -le 0 ]; then
               echo "Repeated utest count is lesser or equals than zero, exiting without running any test"
             else
-            
+
               # Calculate the number of test iterations to be run by the current parallel runner.
               # Since we are running the same test multiple times there is no need to use `circleci tests split`.
               count=$((<<parameters.count>> / CIRCLE_NODE_TOTAL))
@@ -3326,7 +3410,7 @@ commands:
                 else
                   methods="-Dtest.methods=<<parameters.methods>>"
                 fi
-            
+
                 # Prepare the JVM dtests vnodes argument, which is optional
                 vnodes_args=""
                 if <<parameters.vnodes>>; then
@@ -3428,7 +3512,7 @@ commands:
                 echo "No tests to run in this runner"
               else
                 echo "Running <<parameters.tests>> $count times"
-            
+
                 source ~/env3.6/bin/activate
                 export PATH=$JAVA_HOME/bin:$PATH
 
@@ -3439,7 +3523,7 @@ commands:
                 echo "env: $(env)"
                 echo "** done env"
                 mkdir -p /tmp/results/dtests
-            
+
                 tests_arg=$(echo <<parameters.tests>> | sed -e "s/,/ /g")
 
                 stop_on_failure_arg=""
