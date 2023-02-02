@@ -258,12 +258,13 @@ pre_commit_jobs: &pre_commit_jobs
     - start_pre-commit_tests:
         type: approval
     - build:
+        name: build-<< parameters.build_env >>_build-<< parameters.test_env >>_test
         requires:
           - start_pre-commit_tests
         java_env: << parameters.build_env >>
     - unit_tests:
         requires:
-          - build
+          - build-<< parameters.build_env >>_build-<< parameters.test_env >>_test
         java_env: << parameters.test_env >>
 
 
