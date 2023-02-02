@@ -54,6 +54,7 @@ import static org.apache.cassandra.net.ConnectionType.SMALL_MESSAGES;
 import static org.apache.cassandra.net.OutboundConnectionInitiator.*;
 import static org.junit.Assert.assertFalse;
 import static org.junit.Assert.assertTrue;
+import static org.junit.Assert.fail;
 
 // TODO: test failure due to exception, timeout, etc
 public class HandshakeTest
@@ -381,7 +382,10 @@ public class HandshakeTest
             OutboundConnection outboundConnection = initiateOutbound(endpoint, fromConnectionType, fromOptional);
             waitForConnection(outboundConnection);
             assertTrue(outboundConnection.isConnected());
-            assertFalse(outboundConnection.hasPending());
+            if (outboundConnection.hasPending()) {
+                fail(String.format("A connected OutboundConnection should not have pending data: %d count, %d bytes",
+                        outboundConnection.pendingCount(), outboundConnection.pendingBytes()));
+            }
         }
         finally
         {
